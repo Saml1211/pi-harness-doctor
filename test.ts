@@ -64,3 +64,20 @@ console.log("\nALL TESTS PASSED! pi-harness-doctor is fully hardened.");
   assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "95" } as any), "Nudge 70%, Auto-compact 80%, Force 88%", "misordered → defaults");
   console.log("✓ self-compact thresholds reported from env, matching resolveConfig");
 }
+
+// cmux probe: an ordinary file at CMUX_SOCKET_PATH is not a socket
+{
+  const { runHarnessDoctor } = await import("./index.ts");
+  const assert = (await import("node:assert")).default;
+  const fs = await import("node:fs"), os = await import("node:os"), path = await import("node:path");
+  const fake = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "doc-")), "not-a-socket");
+  fs.writeFileSync(fake, "text");
+  const saved = process.env.CMUX_SOCKET_PATH;
+  process.env.CMUX_SOCKET_PATH = fake;
+  const rep = await runHarnessDoctor(process.cwd());
+  process.env.CMUX_SOCKET_PATH = saved;
+  const probe = (rep as any).probes.find((p: any) => p.name === "cmux-race");
+  assert.equal(probe.ok, false, "regular file must not pass as the cmux socket");
+  assert.match(probe.message, /not a socket/);
+  console.log("✓ cmux probe requires an actual socket");
+}

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import type {
   ExtensionAPI,
@@ -158,16 +158,22 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   const t3 = Date.now();
   const cmuxPath = join(extDir, "cmux-race.ts");
   const cmuxSocket = process.env.CMUX_SOCKET_PATH;
-  const socketExists = cmuxSocket ? existsSync(cmuxSocket) : false;
-  const inCmux = socketExists; // an env var alone is not a reachable socket
+  // An env var alone, or an ordinary file at that path, is not a socket (still not a connectivity test)
+  let socketExists = false;
+  try {
+    socketExists = Boolean(cmuxSocket) && statSync(cmuxSocket!).isSocket();
+  } catch {}
+  const cmuxInstalled = existsSync(cmuxPath);
   probes.push({
     name: "cmux-race",
-    ok: existsSync(cmuxPath) && inCmux,
-    message: inCmux
-      ? `Installed; cmux socket file present (not connected to)`
-      : process.env.CMUX_WORKSPACE_ID
-      ? "cmux env vars set but socket file not found"
-      : "not inside cmux (no socket)",
+    ok: cmuxInstalled && socketExists,
+    message: !cmuxInstalled
+      ? "cmux-race.ts missing in extensions"
+      : socketExists
+      ? "Installed; cmux socket present (not connected to)"
+      : cmuxSocket
+      ? "Installed; CMUX_SOCKET_PATH is not a socket"
+      : "Installed; not inside cmux (no socket)",
     latencyMs: Date.now() - t3,
   });
 
