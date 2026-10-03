@@ -72,6 +72,18 @@ export function playAudioChime(sound = "Glass"): boolean {
   }
 }
 
+// ponytail: mirrors self-compact's resolveConfig (same env vars, defaults, ordering rule) instead of
+// importing it, since the extensions ship as separate repos. Update both if the thresholds change.
+export function selfCompactThresholds(env: NodeJS.ProcessEnv = process.env): string {
+  const pct = (v: string | undefined, d: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 10 && n <= 99 ? Math.round(n) : d;
+  };
+  let [nudge, auto, force] = [pct(env.PI_SELF_COMPACT_WARNING_PCT, 70), pct(env.PI_SELF_COMPACT_AUTO_PCT, 80), pct(env.PI_SELF_COMPACT_FORCE_PCT, 88)];
+  if (!(nudge < auto && auto < force)) [nudge, auto, force] = [70, 80, 88];
+  return `Nudge ${nudge}%, Auto-compact ${auto}%, Force ${force}%`;
+}
+
 export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorReport> {
   const probes: ProbeResult[] = [];
   const extDir = join(homedir(), ".pi/agent/extensions");
@@ -85,7 +97,7 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
     name: "self-compact",
     ok: scExists,
     message: scExists
-      ? `Active (Notice 70%, Warning 80%, Force 90% | State: ${stateDir})`
+      ? `Active (${selfCompactThresholds()} | State: ${stateDir})`
       : "Extension file missing in ~/.pi/agent/extensions/self-compact.ts",
     latencyMs: Date.now() - t0,
   });

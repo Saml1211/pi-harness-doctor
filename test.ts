@@ -54,3 +54,13 @@ assert(toolRes.content[0].text.includes("Harness Doctor Report"), "Tool executio
 console.log("✓ Pi 5-argument tool.execute contract verified");
 
 console.log("\nALL TESTS PASSED! pi-harness-doctor is fully hardened.");
+
+// self-compact threshold reporting mirrors self-compact's resolveConfig
+{
+  const { selfCompactThresholds } = await import("./index.ts");
+  const assert = (await import("node:assert")).default;
+  assert.equal(selfCompactThresholds({} as any), "Nudge 70%, Auto-compact 80%, Force 88%");
+  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "85", PI_SELF_COMPACT_FORCE_PCT: "92" } as any), "Nudge 70%, Auto-compact 85%, Force 92%");
+  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "95" } as any), "Nudge 70%, Auto-compact 80%, Force 88%", "misordered → defaults");
+  console.log("✓ self-compact thresholds reported from env, matching resolveConfig");
+}
