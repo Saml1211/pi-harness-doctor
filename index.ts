@@ -11,6 +11,10 @@ import { Type } from "@sinclair/typebox";
 const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const JEV_MODEL = "jev-latest";
 
+const ALLOWED_MACOS_SOUNDS = new Set([
+  "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink",
+]);
+
 export interface ProbeResult {
   name: string;
   ok: boolean;
@@ -48,6 +52,9 @@ function resolveJevApiKey(): string | undefined {
 
 export function playAudioChime(sound = "Glass"): boolean {
   if (process.platform !== "darwin") return false;
+  // Strict allowlist validation prevents path traversal
+  if (!ALLOWED_MACOS_SOUNDS.has(sound)) return false;
+
   const soundPath = `/System/Library/Sounds/${sound}.aiff`;
   if (!existsSync(soundPath) || !existsSync("/usr/bin/afplay")) return false;
 
@@ -56,6 +63,8 @@ export function playAudioChime(sound = "Glass"): boolean {
       detached: true,
       stdio: "ignore",
     });
+    // Critical: attach error handler before unref to prevent unhandled node error events
+    child.on("error", () => {});
     child.unref();
     return true;
   } catch {
@@ -88,11 +97,12 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   let pyOk = false;
   let shOk = false;
   try {
-    execSync("/Users/samlyndon/.bun/bin/bun --version", { stdio: "ignore" });
+    const bunBin = existsSync(join(homedir(), ".bun/bin/bun")) ? join(homedir(), ".bun/bin/bun") : "bun";
+    execSync(`${bunBin} --version`, { stdio: "ignore" });
     bunOk = true;
   } catch {}
   try {
-    execSync("python3 -c 'import sys'", { stdio: "ignore" });
+    execSync("python3 -I -c 'import sys'", { stdio: "ignore" });
     pyOk = true;
   } catch {}
   try {
@@ -136,12 +146,13 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   const t3 = Date.now();
   const cmuxPath = join(extDir, "cmux-race.ts");
   const cmuxSocket = process.env.CMUX_SOCKET_PATH;
-  const inCmux = Boolean(cmuxSocket || process.env.CMUX_WORKSPACE_ID);
+  const socketExists = cmuxSocket ? existsSync(cmuxSocket) : false;
+  const inCmux = Boolean(socketExists || process.env.CMUX_WORKSPACE_ID);
   probes.push({
     name: "cmux-race",
     ok: existsSync(cmuxPath) && inCmux,
     message: inCmux
-      ? `Active (cmux socket: ${cmuxSocket ? "connected" : "workspace active"})`
+      ? `Active (cmux socket: ${socketExists ? "verified on disk" : "workspace active"})`
       : "cmux environment not active (socket unavailable)",
     latencyMs: Date.now() - t3,
   });
@@ -165,9 +176,9 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   let jevOk = false;
   let jevLatency = 0;
   if (jevApiKey) {
+    const pingController = new AbortController();
+    const pingTimer = setTimeout(() => pingController.abort(), 3500);
     try {
-      const pingController = new AbortController();
-      const pingTimer = setTimeout(() => pingController.abort(), 3000);
       const res = await fetch(JEV_ENDPOINT, {
         method: "POST",
         headers: { Authorization: `Bearer ${jevApiKey}`, "Content-Type": "application/json" },
@@ -178,12 +189,18 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
         }),
         signal: pingController.signal,
       });
-      clearTimeout(pingTimer);
       if (res.ok) {
-        jevOk = true;
-        jevLatency = Date.now() - t5;
+        const json = (await res.json()) as any;
+        const noul = json?.answers?.is_healthy?.noul;
+        if (typeof noul === "number" && Number.isFinite(noul)) {
+          jevOk = true;
+          jevLatency = Date.now() - t5;
+        }
       }
-    } catch {}
+    } catch {
+    } finally {
+      clearTimeout(pingTimer);
+    }
   }
   probes.push({
     name: "TypeSafe Jev",
@@ -226,7 +243,7 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
 }
 
 export default function (pi: ExtensionAPI) {
-  // 1. Tool: harness_doctor
+  // 1. Tool: harness_doctor (conforming to Pi's 5-argument execute signature)
   pi.registerTool({
     name: "harness_doctor",
     label: "Harness Doctor & Health Check",
@@ -236,13 +253,14 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       playChime: Type.Optional(Type.Boolean({ description: "Play a test audio chime (default: false)" })),
     }),
-    async execute(_id, params, ctx: ExtensionContext) {
+    async execute(_id, params, _signal, _onUpdate, ctx) {
       if (params.playChime) {
         playAudioChime("Glass");
       }
 
-      ctx.ui?.notify?.("[harness-doctor] Running diagnostic probes...", "info");
-      const report = await runHarnessDoctor(ctx.cwd || process.cwd());
+      const effectiveCtx: ExtensionContext | undefined = ctx;
+      effectiveCtx?.ui?.notify?.("[harness-doctor] Running diagnostic probes...", "info");
+      const report = await runHarnessDoctor(effectiveCtx?.cwd || process.cwd());
 
       return {
         content: [{ type: "text", text: report.markdown }],

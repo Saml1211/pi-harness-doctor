@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import registerDoctor, { runHarnessDoctor, playAudioChime } from "./index.ts";
 
-console.log("=== Testing pi-harness-doctor extension ===");
+console.log("=== Testing pi-harness-doctor extension (Hardened) ===");
 
 const cwd = process.cwd();
 
@@ -25,10 +25,13 @@ assert(registeredTools.has("harness_doctor"), "harness_doctor tool must be regis
 assert(registeredCommands.has("harness-doctor"), "/harness-doctor command must be registered");
 console.log("✓ Tool 'harness_doctor' and command '/harness-doctor' verified");
 
-// 2. Audio Chime Test
-const audioPlayed = playAudioChime("Glass");
-assert(audioPlayed, "macOS Glass chime must be playable");
-console.log("✓ Audio telemetry verified via afplay");
+// 2. Audio Chime Allowlist & Traversal Prevention Test
+const allowedPlayed = playAudioChime("Glass");
+assert(allowedPlayed, "Allowed macOS system chime 'Glass' must play");
+
+const traversalBlocked = playAudioChime("../../etc/passwd");
+assert.equal(traversalBlocked, false, "Path traversal in audio sound name must be strictly blocked");
+console.log("✓ Audio telemetry allowlist verified (path traversal strictly prevented)");
 
 // 3. Harness Doctor Health Probes Test
 console.log("Running runHarnessDoctor probes...");
@@ -41,10 +44,13 @@ assert(report.markdown.includes("Harness Doctor Report"), "Report must include m
 console.log("✓ Harness Doctor diagnostic report assembled:");
 console.log(report.markdown);
 
-// 4. Tool Execution Test
+// 4. Five-argument tool execution test
 const doctorTool = registeredTools.get("harness_doctor");
-const toolRes = await doctorTool.execute("call-doc-1", { playChime: false }, { cwd, ui: { notify: () => {} } });
-assert(toolRes.content[0].text.includes("Harness Doctor Report"), "Tool execution must output report");
-console.log("✓ harness_doctor tool execution verified");
+const mockCtx: any = { cwd, ui: { notify: () => {} } };
+const controller = new AbortController();
 
-console.log("\nALL TESTS PASSED! pi-harness-doctor is fully verified.");
+const toolRes = await doctorTool.execute("call-doc-1", { playChime: false }, controller.signal, () => {}, mockCtx);
+assert(toolRes.content[0].text.includes("Harness Doctor Report"), "Tool execution must output report");
+console.log("✓ Pi 5-argument tool.execute contract verified");
+
+console.log("\nALL TESTS PASSED! pi-harness-doctor is fully hardened.");
