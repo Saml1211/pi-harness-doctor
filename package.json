@@ -1,6 +1,6 @@
 {
   "name": "pi-harness-doctor",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Unified diagnostic doctor and audio telemetry suite for Pi Coding Agent and custom extensions",
   "main": "index.ts",
   "scripts": {
@@ -12,7 +12,8 @@
     "diagnostics",
     "audio-telemetry",
     "telemetry",
-    "indydevdan"
+    "indydevdan",
+    "pi-package"
   ],
   "author": "Sam Lyndon",
   "license": "MIT",
@@ -20,5 +21,10 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

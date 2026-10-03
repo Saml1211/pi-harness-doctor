@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -20,6 +20,14 @@ export interface ProbeResult {
   ok: boolean;
   message: string;
   latencyMs?: number;
+  /** Not applicable on this platform: shown, but excluded from the pass count. */
+  na?: boolean;
+}
+
+export interface DoctorOptions {
+  /** Pi's registry (getAllTools/getCommands/getSettings); lets detection see package-installed extensions. */
+  pi?: Partial<Pick<ExtensionAPI, "getAllTools" | "getCommands" | "getSettings">>;
+  platform?: NodeJS.Platform;
 }
 
 export interface DoctorReport {
@@ -84,27 +92,61 @@ export function selfCompactThresholds(env: NodeJS.ProcessEnv = process.env): str
   return `Nudge ${nudge}%, Auto-compact ${auto}%, Force ${force}%`;
 }
 
-export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorReport> {
+// Installed = registered with Pi (also true for `pi install` packages) OR the legacy extensions/<file> exists.
+function detect(pi: DoctorOptions["pi"], extDir: string, file: string, tools: string[], commands: string[]): "loaded" | "file present" | null {
+  try {
+    const t = new Set(pi?.getAllTools?.().map((x) => x.name));
+    const c = new Set(pi?.getCommands?.().map((x) => x.name));
+    if (tools.some((n) => t.has(n)) || commands.some((n) => c.has(n))) return "loaded";
+  } catch {}
+  return existsSync(join(extDir, file)) ? "file present" : null;
+}
+
+const notFound = (file: string) => `Not registered with Pi and ~/.pi/agent/extensions/${file} not found`;
+
+// No shell: cmd.exe on Windows does not honour single quotes.
+function runs(cmd: string, args: string[], input?: string): boolean {
+  try {
+    execFileSync(cmd, args, { stdio: [input === undefined ? "ignore" : "pipe", "ignore", "ignore"], input });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Windows: `bash` on PATH may be WSL, so probe the shell Pi itself would use (Git Bash by default).
+async function shellWorks(win: boolean, shellPath?: string): Promise<boolean> {
+  if (!win) return runs("bash", ["-c", "exit 0"]);
+  try {
+    const { getShellConfig } = await import("@earendil-works/pi-coding-agent");
+    const c = getShellConfig(shellPath);
+    return c.commandTransport === "stdin" ? runs(c.shell, c.args, "exit 0\n") : runs(c.shell, [...c.args, "exit 0"]);
+  } catch {}
+  return runs(join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe"), ["-c", "exit 0"]);
+}
+
+export async function runHarnessDoctor(cwd = process.cwd(), opts: DoctorOptions = {}): Promise<DoctorReport> {
   const probes: ProbeResult[] = [];
   const extDir = join(homedir(), ".pi/agent/extensions");
+  const { pi } = opts;
+  const win = (opts.platform ?? process.platform) === "win32";
 
   // 1. self-compact probe
   const t0 = Date.now();
-  const selfCompactPath = join(extDir, "self-compact.ts");
+  const sc = detect(pi, extDir, "self-compact.ts", ["self_compact"], ["self-compact"]);
   const stateDir = process.env.PI_SELF_COMPACT_STATE_DIR || join(homedir(), ".pi/state/continuation-notes"); // matches self-compact
-  const scExists = existsSync(selfCompactPath);
   probes.push({
     name: "self-compact",
-    ok: scExists,
-    message: scExists
-      ? `Installed (file present; ${selfCompactThresholds()} | State: ${stateDir})`
-      : "Extension file missing in ~/.pi/agent/extensions/self-compact.ts",
+    ok: !!sc,
+    message: sc
+      ? `Installed (${sc}; ${selfCompactThresholds()} | State: ${stateDir})`
+      : notFound("self-compact.ts"),
     latencyMs: Date.now() - t0,
   });
 
   // 2. auto-validate probe
   const t1 = Date.now();
-  const avPath = join(extDir, "auto-validate.ts");
+  const av = detect(pi, extDir, "auto-validate.ts", [], ["auto-validate"]);
   let bunOk = false;
   let pyOk = false;
   let shOk = false;
@@ -113,28 +155,26 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
     execSync(`${bunBin} --version`, { stdio: "ignore" });
     bunOk = true;
   } catch {}
-  try {
-    execSync("python3 -I -c 'import sys'", { stdio: "ignore" });
-    pyOk = true;
-  } catch {}
-  try {
-    execSync("bash -c 'exit 0'", { stdio: "ignore" });
-    shOk = true;
-  } catch {}
+  const pyArgs = ["-I", "-c", "import sys"];
+  pyOk = runs("python3", pyArgs) || (win && runs("python", pyArgs));
+  shOk = await shellWorks(win, pi?.getSettings?.().shellPath);
 
-  const avOk = existsSync(avPath) && bunOk && pyOk && shOk;
+  const avOk = !!av && bunOk && pyOk && shOk;
   probes.push({
     name: "auto-validate",
     ok: avOk,
     message: avOk
-      ? `Installed; checker binaries present (bun, python3, bash)`
-      : `Missing components: ${!bunOk ? "bun " : ""}${!pyOk ? "python3 " : ""}${!shOk ? "bash" : ""}`,
+      ? `Installed (${av}); checker binaries present (bun, ${win ? "python" : "python3"}, ${win ? "shell" : "bash"})`
+      : [
+          av ? "" : notFound("auto-validate.ts"),
+          bunOk && pyOk && shOk ? "" : `Missing components: ${[!bunOk && "bun", !pyOk && "python3", !shOk && "bash"].filter(Boolean).join(" ")}`,
+        ].filter(Boolean).join("; "),
     latencyMs: Date.now() - t1,
   });
 
   // 3. prime probe
   const t2 = Date.now();
-  const primePath = join(extDir, "prime.ts");
+  const prime = detect(pi, extDir, "prime.ts", ["prime"], ["prime"]);
   let gitBranch = "unknown";
   try {
     gitBranch =
@@ -144,49 +184,50 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
         stdio: ["ignore", "pipe", "ignore"],
       }).trim() || "main";
   } catch {}
-  const primeOk = existsSync(primePath) && gitBranch !== "unknown";
+  const primeOk = !!prime && gitBranch !== "unknown";
   probes.push({
     name: "prime",
     ok: primeOk,
     message: primeOk
-      ? `Installed (file present; git branch here: ${gitBranch})`
-      : "Git or prime.ts unreachable",
+      ? `Installed (${prime}; git branch here: ${gitBranch})`
+      : !prime ? notFound("prime.ts") : "Git unreachable (no branch here)",
     latencyMs: Date.now() - t2,
   });
 
   // 4. cmux-race probe
   const t3 = Date.now();
-  const cmuxPath = join(extDir, "cmux-race.ts");
+  const cmux = detect(pi, extDir, "cmux-race.ts", ["cmux_race"], ["cmux-race"]);
   const cmuxSocket = process.env.CMUX_SOCKET_PATH;
   // An env var alone, or an ordinary file at that path, is not a socket (still not a connectivity test)
   let socketExists = false;
   try {
     socketExists = Boolean(cmuxSocket) && statSync(cmuxSocket!).isSocket();
   } catch {}
-  const cmuxInstalled = existsSync(cmuxPath);
   probes.push({
     name: "cmux-race",
-    ok: cmuxInstalled && socketExists,
-    message: !cmuxInstalled
-      ? "cmux-race.ts missing in extensions"
+    ok: win || (!!cmux && socketExists),
+    na: win,
+    message: win
+      ? "Not applicable on Windows (cmux is macOS-only)"
+      : !cmux
+      ? notFound("cmux-race.ts")
       : socketExists
-      ? "Installed; cmux socket present (not connected to)"
+      ? `Installed (${cmux}); cmux socket present (not connected to)`
       : cmuxSocket
-      ? "Installed; CMUX_SOCKET_PATH is not a socket"
-      : "Installed; not inside cmux (no socket)",
+      ? `Installed (${cmux}); CMUX_SOCKET_PATH is not a socket`
+      : `Installed (${cmux}); not inside cmux (no socket)`,
     latencyMs: Date.now() - t3,
   });
 
   // 5. adw probe
   const t4 = Date.now();
-  const adwPath = join(extDir, "adw.ts");
-  const adwOk = existsSync(adwPath);
+  const adw = detect(pi, extDir, "adw.ts", ["adw"], ["adw"]);
   probes.push({
     name: "adw (verification gate)",
-    ok: adwOk,
-    message: adwOk
-      ? "Installed (file present; verification gate: Jev scope, tests, diff stat, readiness)"
-      : "adw.ts missing in extensions",
+    ok: !!adw,
+    message: adw
+      ? `Installed (${adw}; verification gate: Jev scope, tests, diff stat, readiness)`
+      : notFound("adw.ts"),
     latencyMs: Date.now() - t4,
   });
 
@@ -233,22 +274,26 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
 
   // 7. Audio Telemetry probe
   const t6 = Date.now();
-  const audioOk = existsSync("/usr/bin/afplay") && existsSync("/System/Library/Sounds/Glass.aiff");
+  const audioOk = win || (existsSync("/usr/bin/afplay") && existsSync("/System/Library/Sounds/Glass.aiff"));
   probes.push({
     name: "Audio Telemetry",
     ok: audioOk,
-    message: audioOk ? "afplay and system sounds present" : "afplay or audio assets missing",
+    na: win,
+    message: win
+      ? "Not applicable on Windows (afplay is macOS-only)"
+      : audioOk ? "afplay and system sounds present" : "afplay or audio assets missing",
     latencyMs: Date.now() - t6,
   });
 
-  const totalOk = probes.filter((p) => p.ok).length;
+  const counted = probes.filter((p) => !p.na);
+  const totalOk = counted.filter((p) => p.ok).length;
   const lines: string[] = [
     `### 🩺 Pi Agentic Harness Doctor Report`,
-    `Status: **${totalOk}/${probes.length} checks passed** (${Math.round((totalOk / probes.length) * 100)}%). These are presence checks (files, binaries, socket); only the Jev probe makes a live call. Extension behaviour is not exercised here; each repo's tests do that.\n`,
+    `Status: **${totalOk}/${counted.length} checks passed** (${Math.round((totalOk / counted.length) * 100)}%). These are presence checks (Pi registry or extension files, binaries, socket); only the Jev probe makes a live call. Extension behaviour is not exercised here; each repo's tests do that.\n`,
   ];
 
   for (const p of probes) {
-    const icon = p.ok ? "✅" : "⚠️";
+    const icon = p.na ? "➖" : p.ok ? "✅" : "⚠️";
     const lat = p.latencyMs !== undefined ? ` [${p.latencyMs}ms]` : "";
     lines.push(`- ${icon} **${p.name}**: ${p.message}${lat}`);
   }
@@ -256,7 +301,7 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   return {
     timestamp: new Date().toISOString(),
     totalOk,
-    totalProbes: probes.length,
+    totalProbes: counted.length,
     probes,
     markdown: lines.join("\n"),
   };
@@ -280,7 +325,7 @@ export default function (pi: ExtensionAPI) {
 
       const effectiveCtx: ExtensionContext | undefined = ctx;
       effectiveCtx?.ui?.notify?.("[harness-doctor] Running diagnostic probes...", "info");
-      const report = await runHarnessDoctor(effectiveCtx?.cwd || process.cwd());
+      const report = await runHarnessDoctor(effectiveCtx?.cwd || process.cwd(), { pi });
 
       return {
         content: [{ type: "text", text: report.markdown }],
@@ -293,7 +338,7 @@ export default function (pi: ExtensionAPI) {
     description: "Run diagnostic health check on all custom agentic extensions",
     handler: async (_args, ctx) => {
       ctx.ui?.notify?.("Running harness doctor...", "info");
-      const report = await runHarnessDoctor(ctx.cwd || process.cwd());
+      const report = await runHarnessDoctor(ctx.cwd || process.cwd(), { pi });
       ctx.ui?.notify?.(
         `[harness-doctor] ${report.totalOk}/${report.totalProbes} checks passed (presence inventory)`,
         report.totalOk === report.totalProbes ? "info" : "warning",

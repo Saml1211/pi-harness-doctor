@@ -81,3 +81,28 @@ console.log("\nALL TESTS PASSED! pi-harness-doctor is fully hardened.");
   assert.match(probe.message, /not a socket/);
   console.log("✓ cmux probe requires an actual socket");
 }
+
+// Detection follows Pi's registry (package installs), and Windows marks mac-only probes n/a
+{
+  const { runHarnessDoctor } = await import("./index.ts");
+  const assert = (await import("node:assert")).default;
+  const fakePi = {
+    getAllTools: () => [{ name: "self_compact" }, { name: "prime" }, { name: "adw" }, { name: "cmux_race" }],
+    getCommands: () => [{ name: "auto-validate" }],
+    getSettings: () => ({}),
+  };
+  const rep = await runHarnessDoctor(process.cwd(), { pi: fakePi as any });
+  const msg = (n: string) => rep.probes.find((p) => p.name === n)!.message;
+  assert.match(msg("self-compact"), /Installed \(loaded;/);
+  assert.match(msg("prime"), /Installed \(loaded;/);
+  assert.match(msg("adw (verification gate)"), /Installed \(loaded;/);
+  assert.match(msg("auto-validate"), /^Installed \(loaded\)|Missing components/, "auto-validate seen via its command");
+  assert.doesNotMatch(msg("auto-validate"), /not found/);
+
+  const win = await runHarnessDoctor(process.cwd(), { platform: "win32" });
+  const na = win.probes.filter((p) => p.na).map((p) => p.name).sort();
+  assert.deepEqual(na, ["Audio Telemetry", "cmux-race"]);
+  assert.equal(win.totalProbes, win.probes.length - 2, "n/a probes are not counted");
+  assert.match(win.markdown, /Not applicable on Windows/);
+  console.log("✓ registry-based detection and win32 n/a probes verified");
+}
