@@ -91,13 +91,13 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   // 1. self-compact probe
   const t0 = Date.now();
   const selfCompactPath = join(extDir, "self-compact.ts");
-  const stateDir = join(homedir(), ".pi/state");
+  const stateDir = process.env.PI_SELF_COMPACT_STATE_DIR || join(homedir(), ".pi/state/continuation-notes"); // matches self-compact
   const scExists = existsSync(selfCompactPath);
   probes.push({
     name: "self-compact",
     ok: scExists,
     message: scExists
-      ? `Active (${selfCompactThresholds()} | State: ${stateDir})`
+      ? `Installed (file present; ${selfCompactThresholds()} | State: ${stateDir})`
       : "Extension file missing in ~/.pi/agent/extensions/self-compact.ts",
     latencyMs: Date.now() - t0,
   });
@@ -127,7 +127,7 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
     name: "auto-validate",
     ok: avOk,
     message: avOk
-      ? `Active (bun: ok, python3: ok, bash: ok, JSON.parse: ok)`
+      ? `Installed; checker binaries present (bun, python3, bash)`
       : `Missing components: ${!bunOk ? "bun " : ""}${!pyOk ? "python3 " : ""}${!shOk ? "bash" : ""}`,
     latencyMs: Date.now() - t1,
   });
@@ -149,7 +149,7 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
     name: "prime",
     ok: primeOk,
     message: primeOk
-      ? `Active (branch: ${gitBranch} | stack & diff bundle supported)`
+      ? `Installed (file present; git branch here: ${gitBranch})`
       : "Git or prime.ts unreachable",
     latencyMs: Date.now() - t2,
   });
@@ -159,13 +159,15 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   const cmuxPath = join(extDir, "cmux-race.ts");
   const cmuxSocket = process.env.CMUX_SOCKET_PATH;
   const socketExists = cmuxSocket ? existsSync(cmuxSocket) : false;
-  const inCmux = Boolean(socketExists || process.env.CMUX_WORKSPACE_ID);
+  const inCmux = socketExists; // an env var alone is not a reachable socket
   probes.push({
     name: "cmux-race",
     ok: existsSync(cmuxPath) && inCmux,
     message: inCmux
-      ? `Active (cmux socket: ${socketExists ? "verified on disk" : "workspace active"})`
-      : "cmux environment not active (socket unavailable)",
+      ? `Installed; cmux socket file present (not connected to)`
+      : process.env.CMUX_WORKSPACE_ID
+      ? "cmux env vars set but socket file not found"
+      : "not inside cmux (no socket)",
     latencyMs: Date.now() - t3,
   });
 
@@ -174,10 +176,10 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   const adwPath = join(extDir, "adw.ts");
   const adwOk = existsSync(adwPath);
   probes.push({
-    name: "adw (Software Factory)",
+    name: "adw (verification gate)",
     ok: adwOk,
     message: adwOk
-      ? "Active (5-phase PIV loop: Prime -> Plan -> Build -> Checkpoint -> Verify)"
+      ? "Installed (file present; verification gate: Jev scope, tests, diff stat, readiness)"
       : "adw.ts missing in extensions",
     latencyMs: Date.now() - t4,
   });
@@ -229,14 +231,14 @@ export async function runHarnessDoctor(cwd = process.cwd()): Promise<DoctorRepor
   probes.push({
     name: "Audio Telemetry",
     ok: audioOk,
-    message: audioOk ? "Active (macOS afplay + System/Library/Sounds)" : "afplay or audio assets missing",
+    message: audioOk ? "afplay and system sounds present" : "afplay or audio assets missing",
     latencyMs: Date.now() - t6,
   });
 
   const totalOk = probes.filter((p) => p.ok).length;
   const lines: string[] = [
     `### 🩺 Pi Agentic Harness Doctor Report`,
-    `Status: **${totalOk}/${probes.length} subsystems healthy** (${Math.round((totalOk / probes.length) * 100)}%)\n`,
+    `Status: **${totalOk}/${probes.length} checks passed** (${Math.round((totalOk / probes.length) * 100)}%). These are presence checks (files, binaries, socket); only the Jev probe makes a live call. Extension behaviour is not exercised here; each repo's tests do that.\n`,
   ];
 
   for (const p of probes) {
@@ -261,7 +263,7 @@ export default function (pi: ExtensionAPI) {
     label: "Harness Doctor & Health Check",
     description:
       "Runs sub-150ms diagnostic probes across the entire custom agentic stack (self-compact, auto-validate, prime, cmux-race, adw, TypeSafe Jev, audio telemetry).",
-    promptSnippet: "Use harness_doctor to verify that the custom agentic extensions, Jev API, and cmux sockets are operational.",
+    promptSnippet: "Use harness_doctor for a quick inventory: extension files, checker binaries, cmux socket, live Jev reachability.",
     parameters: Type.Object({
       playChime: Type.Optional(Type.Boolean({ description: "Play a test audio chime (default: false)" })),
     }),
@@ -287,7 +289,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui?.notify?.("Running harness doctor...", "info");
       const report = await runHarnessDoctor(ctx.cwd || process.cwd());
       ctx.ui?.notify?.(
-        `[harness-doctor] ${report.totalOk}/${report.totalProbes} subsystems healthy`,
+        `[harness-doctor] ${report.totalOk}/${report.totalProbes} checks passed (presence inventory)`,
         report.totalOk === report.totalProbes ? "info" : "warning",
       );
     },
