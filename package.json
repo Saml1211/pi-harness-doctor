@@ -1,6 +1,6 @@
 {
   "name": "pi-harness-doctor",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Unified diagnostic doctor and audio telemetry suite for Pi Coding Agent and custom extensions",
   "main": "index.ts",
   "scripts": {

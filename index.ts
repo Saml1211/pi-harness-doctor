@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { execFileSync, execSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -28,6 +28,8 @@ export interface DoctorOptions {
   /** Pi's registry (getAllTools/getCommands/getSettings); lets detection see package-installed extensions. */
   pi?: Partial<Pick<ExtensionAPI, "getAllTools" | "getCommands" | "getSettings">>;
   platform?: NodeJS.Platform;
+  /** Home directory to inspect instead of the real one (tests). */
+  home?: string;
 }
 
 export interface DoctorReport {
@@ -38,17 +40,17 @@ export interface DoctorReport {
   markdown: string;
 }
 
-function resolveJevApiKey(): string | undefined {
+function resolveJevApiKey(home = homedir()): string | undefined {
   if (process.env.TYPESAFE_API_KEY?.trim()) {
     return process.env.TYPESAFE_API_KEY.trim();
   }
   try {
-    const configPath = join(homedir(), ".pi/agent/pi-jev.json");
+    const configPath = join(home, ".pi/agent/pi-jev.json");
     if (existsSync(configPath)) {
       const cfg = JSON.parse(readFileSync(configPath, "utf8"));
       if (cfg.apiKey?.trim()) return cfg.apiKey.trim();
       if (cfg.apiKeyFile) {
-        const keyFilePath = cfg.apiKeyFile.replace(/^~(?=$|\/)/, homedir());
+        const keyFilePath = cfg.apiKeyFile.replace(/^~(?=$|\/)/, home);
         if (existsSync(keyFilePath)) {
           return readFileSync(keyFilePath, "utf8").trim();
         }
@@ -93,11 +95,13 @@ export function selfCompactThresholds(env: NodeJS.ProcessEnv = process.env): str
   return `Nudge ${nudge}%, Auto-compact ${auto}%, Force ${force}% of ${cap ? `min(window, ${cap / 1000}K)` : "the whole window"}`;
 }
 
-// Installed = registered with Pi (also true for `pi install` packages) OR the legacy extensions/<file> exists.
+// Installed = registered with Pi by an extension (also true for `pi install` packages) OR the legacy
+// extensions/<file> exists. getCommands() also lists prompt templates and skills, and getAllTools() lists
+// built-ins, so a bare name match is not enough: commands must have source "extension", tools must not be built-in.
 function detect(pi: DoctorOptions["pi"], extDir: string, file: string, tools: string[], commands: string[]): "loaded" | "file present" | null {
   try {
-    const t = new Set(pi?.getAllTools?.().map((x) => x.name));
-    const c = new Set(pi?.getCommands?.().map((x) => x.name));
+    const t = new Set(pi?.getAllTools?.().filter((x) => !String((x as any).sourceInfo?.path ?? "").startsWith("builtin:")).map((x) => x.name));
+    const c = new Set(pi?.getCommands?.().filter((x) => x.source === "extension").map((x) => x.name));
     if (tools.some((n) => t.has(n)) || commands.some((n) => c.has(n))) return "loaded";
   } catch {}
   return existsSync(join(extDir, file)) ? "file present" : null;
@@ -105,10 +109,13 @@ function detect(pi: DoctorOptions["pi"], extDir: string, file: string, tools: st
 
 const notFound = (file: string) => `Not registered with Pi and ~/.pi/agent/extensions/${file} not found`;
 
+// Every subprocess probe is synchronous, so a hung executable must be killed rather than block Pi.
+const PROBE_TIMEOUT_MS = 3000;
+
 // No shell: cmd.exe on Windows does not honour single quotes.
 function runs(cmd: string, args: string[], input?: string): boolean {
   try {
-    execFileSync(cmd, args, { stdio: [input === undefined ? "ignore" : "pipe", "ignore", "ignore"], input });
+    execFileSync(cmd, args, { stdio: [input === undefined ? "ignore" : "pipe", "ignore", "ignore"], input, timeout: PROBE_TIMEOUT_MS, killSignal: "SIGKILL" });
     return true;
   } catch {
     return false;
@@ -128,14 +135,15 @@ async function shellWorks(win: boolean, shellPath?: string): Promise<boolean> {
 
 export async function runHarnessDoctor(cwd = process.cwd(), opts: DoctorOptions = {}): Promise<DoctorReport> {
   const probes: ProbeResult[] = [];
-  const extDir = join(homedir(), ".pi/agent/extensions");
+  const home = opts.home ?? homedir();
+  const extDir = join(home, ".pi/agent/extensions");
   const { pi } = opts;
   const win = (opts.platform ?? process.platform) === "win32";
 
   // 1. self-compact probe
   const t0 = Date.now();
   const sc = detect(pi, extDir, "self-compact.ts", ["self_compact"], ["self-compact"]);
-  const stateDir = process.env.PI_SELF_COMPACT_STATE_DIR || join(homedir(), ".pi/state/continuation-notes"); // matches self-compact
+  const stateDir = process.env.PI_SELF_COMPACT_STATE_DIR || join(home, ".pi/state/continuation-notes"); // matches self-compact
   probes.push({
     name: "self-compact",
     ok: !!sc,
@@ -148,17 +156,12 @@ export async function runHarnessDoctor(cwd = process.cwd(), opts: DoctorOptions 
   // 2. auto-validate probe
   const t1 = Date.now();
   const av = detect(pi, extDir, "auto-validate.ts", [], ["auto-validate"]);
-  let bunOk = false;
-  let pyOk = false;
-  let shOk = false;
-  try {
-    const bunBin = existsSync(join(homedir(), ".bun/bin/bun")) ? join(homedir(), ".bun/bin/bun") : "bun";
-    execSync(`${bunBin} --version`, { stdio: "ignore" });
-    bunOk = true;
-  } catch {}
-  const pyArgs = ["-I", "-c", "import sys"];
-  pyOk = runs("python3", pyArgs) || (win && runs("python", pyArgs));
-  shOk = await shellWorks(win, pi?.getSettings?.().shellPath);
+  const bunBin = existsSync(join(home, ".bun/bin/bun")) ? join(home, ".bun/bin/bun") : "bun";
+  const bunOk = runs(bunBin, ["--version"]);
+  // Probe exactly the interpreter auto-validate invokes (python on win32: python3 is often a Store stub).
+  const py = win ? "python" : "python3";
+  const pyOk = runs(py, ["-I", "-c", "import sys"]);
+  const shOk = await shellWorks(win, pi?.getSettings?.().shellPath);
 
   const avOk = !!av && bunOk && pyOk && shOk;
   probes.push({
@@ -168,7 +171,7 @@ export async function runHarnessDoctor(cwd = process.cwd(), opts: DoctorOptions 
       ? `Installed (${av}); checker binaries present (bun, ${win ? "python" : "python3"}, ${win ? "shell" : "bash"})`
       : [
           av ? "" : notFound("auto-validate.ts"),
-          bunOk && pyOk && shOk ? "" : `Missing components: ${[!bunOk && "bun", !pyOk && "python3", !shOk && "bash"].filter(Boolean).join(" ")}`,
+          bunOk && pyOk && shOk ? "" : `Missing components: ${[!bunOk && "bun", !pyOk && py, !shOk && "bash"].filter(Boolean).join(" ")}`,
         ].filter(Boolean).join("; "),
     latencyMs: Date.now() - t1,
   });
@@ -177,14 +180,16 @@ export async function runHarnessDoctor(cwd = process.cwd(), opts: DoctorOptions 
   const t2 = Date.now();
   const prime = detect(pi, extDir, "prime.ts", ["prime"], ["prime"]);
   let gitBranch = "unknown";
+  // No shell, so the timeout kills git itself rather than a wrapper shell that leaves git holding the pipe.
+  const git = (args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: PROBE_TIMEOUT_MS, killSignal: "SIGKILL" }).trim();
   try {
-    gitBranch =
-      execSync("git branch --show-current || git rev-parse --abbrev-ref HEAD", {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim() || "main";
-  } catch {}
+    gitBranch = git(["branch", "--show-current"]) || "main";
+  } catch {
+    try {
+      gitBranch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || "main";
+    } catch {}
+  }
   const primeOk = !!prime && gitBranch !== "unknown";
   probes.push({
     name: "prime",
@@ -234,7 +239,7 @@ export async function runHarnessDoctor(cwd = process.cwd(), opts: DoctorOptions 
 
   // 6. TypeSafe Jev System One probe
   const t5 = Date.now();
-  const jevApiKey = resolveJevApiKey();
+  const jevApiKey = resolveJevApiKey(home);
   let jevOk = false;
   let jevLatency = 0;
   if (jevApiKey) {
