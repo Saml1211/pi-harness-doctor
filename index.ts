@@ -88,7 +88,7 @@ export function selfCompactThresholds(env: NodeJS.ProcessEnv = process.env): str
     return Number.isFinite(n) && n >= 10 && n <= 99 ? Math.round(n) : d;
   };
   let [nudge, auto, force] = [pct(env.PI_SELF_COMPACT_WARNING_PCT, 70), pct(env.PI_SELF_COMPACT_AUTO_PCT, 80), pct(env.PI_SELF_COMPACT_FORCE_PCT, 88)];
-  const cap = /^\d+$/.test(env.PI_SELF_COMPACT_WORKING_WINDOW ?? "") ? Number(env.PI_SELF_COMPACT_WORKING_WINDOW) : 300_000; // mirrors self-compact
+  const cap = /^\d+$/.test(env.PI_SELF_COMPACT_WORKING_WINDOW ?? "") ? Number(env.PI_SELF_COMPACT_WORKING_WINDOW) : 200_000; // mirrors self-compact
   if (!(nudge < auto && auto < force)) [nudge, auto, force] = [70, 80, 88];
   return `Nudge ${nudge}%, Auto-compact ${auto}%, Force ${force}% of ${cap ? `min(window, ${cap / 1000}K)` : "the whole window"}`;
 }
