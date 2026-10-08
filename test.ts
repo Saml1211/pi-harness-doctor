@@ -63,10 +63,11 @@ console.log("\nALL TESTS PASSED! pi-harness-doctor is fully hardened.");
 {
   const { selfCompactThresholds } = await import("./index.ts");
   const assert = (await import("node:assert")).default;
-  assert.equal(selfCompactThresholds({} as any), "Nudge 70%, Auto-compact 80%, Force 88% of min(window, 200K)");
-  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "85", PI_SELF_COMPACT_FORCE_PCT: "92" } as any), "Nudge 70%, Auto-compact 85%, Force 92% of min(window, 200K)");
-  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_WORKING_WINDOW: "0" } as any), "Nudge 70%, Auto-compact 80%, Force 88% of the whole window");
-  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "95" } as any), "Nudge 70%, Auto-compact 80%, Force 88% of min(window, 200K)", "misordered → defaults");
+  assert.equal(selfCompactThresholds({} as any), "Nudge 75%, Auto-compact 88%, Force 94% of the whole window");
+  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "90", PI_SELF_COMPACT_FORCE_PCT: "96" } as any), "Nudge 75%, Auto-compact 90%, Force 96% of the whole window");
+  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_WORKING_WINDOW: "200000" } as any), "Nudge 75%, Auto-compact 88%, Force 94% of min(window, 200K)");
+  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_AUTO_PCT: "95" } as any), "Nudge 75%, Auto-compact 88%, Force 94% of the whole window", "misordered → defaults");
+  assert.equal(selfCompactThresholds({ PI_SELF_COMPACT_ENABLED: "false" } as any), "Nudge 75%, Auto-compact 88%, Force 94% of the whole window [DISABLED]");
   console.log("✓ self-compact thresholds reported from env, matching resolveConfig");
 }
 

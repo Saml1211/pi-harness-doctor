@@ -84,15 +84,33 @@ export function playAudioChime(sound = "Glass"): boolean {
 
 // ponytail: mirrors self-compact's resolveConfig (same env vars, defaults, ordering rule) instead of
 // importing it, since the extensions ship as separate repos. Update both if the thresholds change.
-export function selfCompactThresholds(env: NodeJS.ProcessEnv = process.env): string {
-  const pct = (v: string | undefined, d: number) => {
+export function selfCompactThresholds(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
+  const pct = (v: any, d: number) => {
     const n = Number(v);
     return Number.isFinite(n) && n >= 10 && n <= 99 ? Math.round(n) : d;
   };
-  let [nudge, auto, force] = [pct(env.PI_SELF_COMPACT_WARNING_PCT, 70), pct(env.PI_SELF_COMPACT_AUTO_PCT, 80), pct(env.PI_SELF_COMPACT_FORCE_PCT, 88)];
-  const cap = /^\d+$/.test(env.PI_SELF_COMPACT_WORKING_WINDOW ?? "") && Number.isSafeInteger(Number(env.PI_SELF_COMPACT_WORKING_WINDOW)) ? Number(env.PI_SELF_COMPACT_WORKING_WINDOW) : 200_000; // mirrors self-compact
-  if (!(nudge < auto && auto < force)) [nudge, auto, force] = [70, 80, 88];
-  return `Nudge ${nudge}%, Auto-compact ${auto}%, Force ${force}% of ${cap ? `min(window, ${cap / 1000}K)` : "the whole window"}`;
+
+  // Try reading ~/.pi/agent/self-compact.json if available
+  let fileCfg: any = {};
+  try {
+    const cfgPath = env.PI_SELF_COMPACT_CONFIG_FILE || join(home, ".pi/agent/self-compact.json");
+    if (existsSync(cfgPath)) fileCfg = JSON.parse(readFileSync(cfgPath, "utf8")) || {};
+  } catch {}
+
+  const enabled = env.PI_SELF_COMPACT_ENABLED !== undefined
+    ? !["false", "0", "off", "no"].includes(env.PI_SELF_COMPACT_ENABLED.trim().toLowerCase())
+    : fileCfg.enabled ?? true;
+
+  let nudge = pct(env.PI_SELF_COMPACT_WARNING_PCT, pct(fileCfg.nudgePct ?? fileCfg.warningPct, 75));
+  let auto = pct(env.PI_SELF_COMPACT_AUTO_PCT, pct(fileCfg.autoCompactPct ?? fileCfg.autoPct, 88));
+  let force = pct(env.PI_SELF_COMPACT_FORCE_PCT, pct(fileCfg.forcePct, 94));
+
+  const winEnv = env.PI_SELF_COMPACT_WORKING_WINDOW ?? fileCfg.workingWindowTokens ?? fileCfg.workingWindow;
+  const cap = /^\d+$/.test(String(winEnv ?? "")) && Number.isSafeInteger(Number(winEnv)) ? Number(winEnv) : 0; // mirrors self-compact (default 0 = uncapped)
+  if (!(nudge < auto && auto < force)) [nudge, auto, force] = [75, 88, 94];
+
+  const status = enabled ? "" : " [DISABLED]";
+  return `Nudge ${nudge}%, Auto-compact ${auto}%, Force ${force}% of ${cap ? `min(window, ${cap / 1000}K)` : "the whole window"}${status}`;
 }
 
 // Installed = registered with Pi by an extension (also true for `pi install` packages) OR the legacy
