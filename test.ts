@@ -39,7 +39,9 @@ console.log("✓ Audio telemetry allowlist verified (path traversal strictly pre
 console.log("Running runHarnessDoctor probes...");
 const report = await runHarnessDoctor(cwd);
 
-assert(report.totalProbes >= 6, "Must run at least 6 probes");
+// Seven probes always run; on Windows cmux-race and audio are not applicable and are not counted.
+assert(report.probes.length >= 7, "Must run at least 7 probes");
+assert.equal(report.totalProbes, report.probes.filter((p) => !p.na).length, "totalProbes must count the applicable probes");
 // Host-independent: how many probes pass depends on what is installed here; the arithmetic must not.
 assert.equal(report.totalOk, report.probes.filter((p) => p.ok && !p.na).length, "totalOk must count the ok, applicable probes");
 assert(report.totalOk <= report.totalProbes);
@@ -80,7 +82,10 @@ console.log("\nALL TESTS PASSED! pi-harness-doctor is fully hardened.");
   fs.writeFileSync(fake, "text");
   const saved = process.env.CMUX_SOCKET_PATH;
   process.env.CMUX_SOCKET_PATH = fake;
-  const rep = await runHarnessDoctor(process.cwd());
+  const rep = await runHarnessDoctor(process.cwd(), {
+    platform: "darwin", // cmux is macOS-only; n/a on Windows
+    pi: { getAllTools: () => [{ name: "cmux_race", sourceInfo: { path: "ext" } }], getCommands: () => [] } as any, // installed, so the socket is what is tested
+  });
   process.env.CMUX_SOCKET_PATH = saved;
   const probe = (rep as any).probes.find((p: any) => p.name === "cmux-race");
   assert.equal(probe.ok, false, "regular file must not pass as the cmux socket");
