@@ -6,6 +6,17 @@ console.log("=== Testing pi-harness-doctor extension (Hardened) ===");
 
 const cwd = process.cwd();
 
+// The TypeSafe Jev probe must not reach the network: with the API slow or
+// unreachable this suite ran for minutes. Every doctor run gets a stub fetch
+// and a fake key; sandboxed runs below still clear the key with withEnv.
+const jevCalls: string[] = [];
+let jevReply = () => new Response(JSON.stringify({ answers: { is_healthy: { noul: 0.97 } } }), { status: 200 });
+globalThis.fetch = (async (url: any) => {
+  jevCalls.push(String(url));
+  return jevReply();
+}) as typeof fetch;
+process.env.TYPESAFE_API_KEY = "test-key-not-real";
+
 // 1. Tool and Command Registration Test
 const registeredTools = new Map();
 const registeredCommands = new Map();
@@ -46,6 +57,14 @@ assert.equal(report.totalProbes, report.probes.filter((p) => !p.na).length, "tot
 assert.equal(report.totalOk, report.probes.filter((p) => p.ok && !p.na).length, "totalOk must count the ok, applicable probes");
 assert(report.totalOk <= report.totalProbes);
 assert(report.markdown.includes("Harness Doctor Report"), "Report must include markdown header");
+
+const jevProbe = (r: any) => r.probes.find((p: any) => p.name === "TypeSafe Jev");
+assert.match(jevProbe(report).message, /^Connected \(System One: \d+ms\)$/, "Jev probe reads the stubbed answer");
+assert(jevCalls.length > 0 && jevCalls.every((u) => u === "https://api.typesafe.ai/v1/systemone"), "Jev probe used the stub, not the network");
+jevReply = () => new Response("unavailable", { status: 503 });
+assert.match(jevProbe(await runHarnessDoctor(cwd)).message, /unreachable/, "a non-200 Jev answer is reported as unreachable");
+jevReply = () => new Response(JSON.stringify({ answers: { is_healthy: { noul: 0.97 } } }), { status: 200 });
+console.log("✓ Jev probe parses a healthy answer and reports a failed one (stubbed, no network)");
 
 console.log("✓ Harness Doctor diagnostic report assembled:");
 console.log(report.markdown);
